@@ -106,6 +106,32 @@ sleep 1
 dump "$SMOKE/a11y-after-act.json"
 echo "toggle states after nidara-act: $(state_of "$SMOKE/a11y-after-act.json")"
 
+# (d) wev diagnostic: does the compositor deliver virtual-pointer BUTTON
+# events at all in this environment? wev logs every event it receives.
+GDK_BACKEND=wayland wev > "$SMOKE/wev.log" 2>&1 &
+WEV=$!
+for i in $(seq 1 15); do
+    hyprctl clients -j | jq -e '.[] | select(.class=="wev" or .initialClass=="wev")' >/dev/null 2>&1 && break
+    sleep 1
+done
+hyprctl dispatch "hl.dsp.focus({ window = 'class:wev' })" || true
+sleep 1
+read WVX WVY <<<"$(hyprctl clients -j | jq -r '.[] | select(.class=="wev" or .initialClass=="wev") | .at | "\(.[0]) \(.[1])"' 2>/dev/null)"
+read WVW WVH <<<"$(hyprctl clients -j | jq -r '.[] | select(.class=="wev" or .initialClass=="wev") | .size | "\(.[0]) \(.[1])"' 2>/dev/null)"
+if [ -n "${WVX:-}" ] && [ -n "${WVW:-}" ]; then
+    MCX=$(( WVX + WVW/2 )); MCY=$(( WVY + WVH/2 ))
+    echo "wev at $WVX,$WVY size ${WVW}x${WVH} - clicking $MCX,$MCY"
+    "$SMOKE/nidara-input" move "$MCX" "$MCY" "$EW" "$EH"
+    sleep 1
+    "$SMOKE/nidara-input" click "$MCX" "$MCY" "$EW" "$EH"
+    sleep 1
+else
+    echo "PROBE-GAP: wev window not found"
+fi
+kill "$WEV" 2>/dev/null
+echo "── wev events received (pointer) ──"
+grep -E 'pointer.*(enter|motion|button)' "$SMOKE/wev.log" | tail -20 || tail -20 "$SMOKE/wev.log"
+
 grim ${GRIM_O:+-o "$GRIM_O"} "$SMOKE/ai-after.png"
 kill "$APP" 2>/dev/null
 echo "PROBE DONE"
