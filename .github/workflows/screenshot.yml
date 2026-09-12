@@ -1,0 +1,34 @@
+name: Screenshot
+
+# Manual screenshot run for the Nidara shell, reusing the exact mechanism of the
+# upstream `smoke` job in ci.yml: vkms on the runner, a privileged Arch container,
+# scripts/ci/headless-smoke.sh boots Hyprland + the shell and captures PNGs with
+# grim. Results land in the smoke-out/ artifact.
+on:
+  workflow_dispatch:
+
+jobs:
+  screenshot:
+    name: Headless boot + screenshots
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Load vkms (virtual KMS device)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq "linux-modules-extra-$(uname -r)"
+          sudo modprobe vkms
+          ls -l /dev/dri
+      - name: Bundle + headless boot (Arch container on vkms)
+        run: |
+          docker run --rm --privileged \
+            -v "$PWD:/repo" \
+            archlinux:latest bash /repo/scripts/ci/headless-smoke.sh
+      - name: Upload screenshots + logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nidara-screenshots
+          path: smoke-out/
+          if-no-files-found: ignore
