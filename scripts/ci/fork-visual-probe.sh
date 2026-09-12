@@ -132,6 +132,9 @@ kill "$WEV" 2>/dev/null
 echo "── wev events received (pointer) ──"
 grep -E 'pointer.*(enter|motion|button)' "$SMOKE/wev.log" | tail -20 || tail -20 "$SMOKE/wev.log"
 
+echo "── probe-app event log ──"
+cat "$SMOKE/probe-app.log" || true
+
 grim ${GRIM_O:+-o "$GRIM_O"} "$SMOKE/ai-after.png"
 kill "$APP" 2>/dev/null
 echo "PROBE DONE"

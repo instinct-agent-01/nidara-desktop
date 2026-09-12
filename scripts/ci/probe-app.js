@@ -18,7 +18,15 @@ app.connect("activate", () => {
     const button = new Gtk.Button({ label: "Probe button" })
     const counter = new Gtk.Label({ label: "Clicks: 0" })
     let n = 0
-    button.connect("clicked", () => { n += 1; counter.set_label(`Clicks: ${n}`) })
+    button.connect("clicked", () => { n += 1; counter.set_label(`Clicks: ${n}`); print(`APP-LOG: button clicked, n=${n}`) })
+    toggle.connect("toggled", () => print(`APP-LOG: toggle active=${toggle.get_active()}`))
+    // Instrumentation for CI: log every press/release GTK sees on the window,
+    // so the probe can tell "compositor delivered the button events" apart
+    // from "the app never saw them" without guessing from pixels.
+    const gesture = new Gtk.GestureClick()
+    gesture.connect("pressed", (_g, _n, x, y) => print(`APP-LOG: gesture pressed at ${x},${y}`))
+    gesture.connect("released", (_g, _n, x, y) => print(`APP-LOG: gesture released at ${x},${y}`))
+    win.add_controller(gesture)
     box.append(label); box.append(toggle); box.append(button); box.append(counter)
     win.set_child(box)
     win.set_default_size(480, 320)
