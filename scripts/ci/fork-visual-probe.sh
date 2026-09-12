@@ -66,19 +66,46 @@ gjs -m "$REPO/bin/nidara-a11y" probe > "$SMOKE/a11y-tree.json"
 jq '{count, hint} + {first_nodes: [.nodes[0:10][] | {role, id, states, actions}]}'     "$SMOKE/a11y-tree.json" || head -c 2000 "$SMOKE/a11y-tree.json"
 grim ${GRIM_O:+-o "$GRIM_O"} "$SMOKE/ai-before.png"
 
-# ── 5. ACT: click the toggle; prove the change in tree + screenshot ──────────
-TARGET="$(jq -r '[.nodes[] | select((.role=="toggle button" or .role=="check box" or .role=="push button") and (.id != null) and (.id != "") and (.visible==true))][0] | if . == null then "" else "\(.role)\t\(.id)" end' "$SMOKE/a11y-tree.json")"
-ROLE="${TARGET%%$'\t'*}"; NAME="${TARGET#*$'\t'}"
-echo "click target: role='$ROLE' name='$NAME'"
-if [ -n "$NAME" ]; then
-    gjs -m "$REPO/bin/nidara-click" app probe "$NAME" "$ROLE" > "$SMOKE/click-result.json"
-    cat "$SMOKE/click-result.json"
-    sleep 1
-    gjs -m "$REPO/bin/nidara-a11y" probe > "$SMOKE/a11y-tree-after.json"
-    jq '[.nodes[] | select(.id=="'"$NAME"'") | {role, id, states}]' "$SMOKE/a11y-tree-after.json" || true
-else
-    echo "PROBE-GAP: no clickable node with an accessible name in the tree"
-fi
+# ── 5. ACT: three layers, each verified against a fresh a11y dump ───────────
+#   a. nidara-click (gated wrapper: focus check, AT-SPI node resolve, inject)
+#   b. nidara-input DIRECT (raw virtual-pointer click on the button's centre)
+#   c. nidara-act (AT-SPI do_action — the semantic path, same gate)
+EXT="$(hyprctl monitors -j | jq -r '.[0] | "\(.width/(.scale)) \(.height/(.scale))"' | awk '{print $1" "$2}')"
+EW="${EXT%% *}"; EH="${EXT##* }"
+echo "output extent (logical): ${EW}x${EH}"
+
+dump() { gjs -m "$REPO/bin/nidara-a11y" probe > "$1"; }
+
+state_of() { jq -r '[.nodes[] | select(.id=="Probe toggle" and .role=="toggle button") | .states[]] | join(",")' "$1"; }
+clicks_of() { jq -r '[.nodes[] | select(.role=="label") | .id // empty] | map(select(startswith("Clicks:"))) | .[0] // "?"' "$1"; }
+
+# (a) wrapped click on the toggle
+dump "$SMOKE/a11y-tree.json"
+grim ${GRIM_O:+-o "$GRIM_O"} "$SMOKE/ai-before.png"
+gjs -m "$REPO/bin/nidara-click" app probe "Probe toggle" "toggle button" > "$SMOKE/click-result.json"
+cat "$SMOKE/click-result.json"
+sleep 1
+dump "$SMOKE/a11y-after-click.json"
+echo "toggle states after nidara-click: $(state_of "$SMOKE/a11y-after-click.json")"
+
+# (b) direct injector click on the button (counter text is unambiguous proof)
+WAT="$(hyprctl clients -j | jq -r '.[] | select(.class=="org.nidara.Probe") | .at | "\(.[0]) \(.[1])"')"
+WX="${WAT%% *}"; WY="${WAT##* }"
+read BX BY BW BH <<<"$(jq -r '.nodes[] | select(.id=="Probe button" and .role=="button") | .bounds | "\(.x) \(.y) \(.w) \(.h)"' "$SMOKE/a11y-after-click.json")"
+CX=$(( WX + BX + BW/2 )); CY=$(( WY + BY + BH/2 ))
+echo "direct click at $CX,$CY (window at $WX,$WY)"
+"$SMOKE/nidara-input" click "$CX" "$CY" "$EW" "$EH" || echo "PROBE-GAP: direct nidara-input click failed"
+sleep 1
+dump "$SMOKE/a11y-after-direct.json"
+echo "counter after direct click: $(clicks_of "$SMOKE/a11y-after-direct.json")"
+
+# (c) AT-SPI do_action on the toggle
+gjs -m "$REPO/bin/nidara-act" probe "Probe toggle" click "toggle button" > "$SMOKE/act-result.json"
+cat "$SMOKE/act-result.json"
+sleep 1
+dump "$SMOKE/a11y-after-act.json"
+echo "toggle states after nidara-act: $(state_of "$SMOKE/a11y-after-act.json")"
+
 grim ${GRIM_O:+-o "$GRIM_O"} "$SMOKE/ai-after.png"
 kill "$APP" 2>/dev/null
 echo "PROBE DONE"
