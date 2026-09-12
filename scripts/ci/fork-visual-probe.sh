@@ -12,9 +12,14 @@
 #      zwlr_virtual_pointer_v1 (allowComputerControl) whose effect is visible
 #      in before/after grim captures and in the re-read a11y tree.
 #
-# Best-effort by contract: everything logs to /tmp/smoke/probe.log and every
-# artifact lands in /tmp/smoke, which the finish() trap ships to the artifact
-# bundle. A failure here reports "what is missing", it never fails the smoke.
+# The probe app is a purpose-built GJS/GTK4 window (probe-app.js): BOTH stock
+# GTK demo apps crash in this container — every SVG icon load goes through
+# glycin's bwrap-sandboxed loader, which exits early here (no user namespaces
+# for the sandbox). An icon-free app sidesteps that entirely.
+#
+# Best-effort by contract: logs to /tmp/smoke/probe.log, artifacts in
+# /tmp/smoke (the finish() trap ships them to the artifact bundle). A failure
+# here reports "what is missing"; it never fails the smoke.
 # ─────────────────────────────────────────────────────────────────────────────
 set -uo pipefail
 exec >>/tmp/smoke/probe.log 2>&1
@@ -30,50 +35,47 @@ export PATH="$SMOKE:$REPO/bin:$PATH"
 # org.a11y.Bus on the session bus, spawns the a11y bus and the registry.
 /usr/lib/at-spi-bus-launcher --launch-immediately &
 sleep 2
-gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus \
-    --method org.a11y.Bus.GetAddress || echo "PROBE-GAP: org.a11y.Bus.GetAddress failed"
+gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus     --method org.a11y.Bus.GetAddress || echo "PROBE-GAP: org.a11y.Bus.GetAddress failed"
 
 # ── 2. Synthetic pointer backend (what install.sh compiles on a real install)
 VP_XML=/usr/share/wlr-protocols/unstable/wlr-virtual-pointer-unstable-v1.xml
 wayland-scanner client-header "$VP_XML" "$SMOKE/wlr-virtual-pointer-unstable-v1-client-protocol.h"
 wayland-scanner private-code  "$VP_XML" "$SMOKE/wlr-virtual-pointer-unstable-v1-protocol.c"
-cc -O2 "$REPO/bin/nidara-input.c" "$SMOKE/wlr-virtual-pointer-unstable-v1-protocol.c" -I"$SMOKE" \
-    $(pkg-config --cflags --libs wayland-client) -o "$SMOKE/nidara-input" \
-    || echo "PROBE-GAP: nidara-input build failed"
+cc -O2 "$REPO/bin/nidara-input.c" "$SMOKE/wlr-virtual-pointer-unstable-v1-protocol.c" -I"$SMOKE"     $(pkg-config --cflags --libs wayland-client) -o "$SMOKE/nidara-input"     || echo "PROBE-GAP: nidara-input build failed"
 
-# ── 3. A third-party GTK4 app to perceive and act on ─────────────────────────
-GDK_BACKEND=wayland gtk3-widget-factory >"$SMOKE/widget-factory.log" 2>&1 &
+# ── 3. The third-party probe app ─────────────────────────────────────────────
+GDK_BACKEND=wayland gjs -m "$REPO/scripts/ci/probe-app.js" >"$SMOKE/probe-app.log" 2>&1 &
 APP=$!
 for i in $(seq 1 20); do
-    hyprctl clients -j | jq -e '.[] | select(.class=="gtk3-widget-factory")' >/dev/null 2>&1 && break
+    hyprctl clients -j | jq -e '.[] | select(.class=="org.nidara.Probe")' >/dev/null 2>&1 && break
     sleep 1
 done
 hyprctl clients -j > "$SMOKE/clients.json"
-# `hyprctl dispatch <classic string>` is a Lua syntax error under this
-# repo's config parser; the dispatch argument must be a Lua expression.
-hyprctl dispatch "hl.dsp.focus({ window = 'class:gtk3-widget-factory' })" || true
+# `hyprctl dispatch <classic string>` is a Lua syntax error under this repo's
+# config parser; the dispatch argument must be a Lua expression.
+hyprctl dispatch "hl.dsp.focus({ window = 'class:org.nidara.Probe' })" || true
 sleep 2
 hyprctl activewindow -j > "$SMOKE/activewindow.json"
 
-# ── 4. PERCEIVE: dump the a11y tree ──────────────────────────────────────────
 GRIM_O=""
 [ -s "$SMOKE/grim-output" ] && GRIM_O="$(cat "$SMOKE/grim-output")"
 echo "grim output: ${GRIM_O:-<all>}"
 
-gjs -m "$REPO/bin/nidara-a11y" gtk3-widget-factory > "$SMOKE/a11y-tree.json"
-jq '{count, hint} + {first_nodes: [.nodes[0:8][] | {role, id, states, actions}]}' \
-    "$SMOKE/a11y-tree.json" || head -c 2000 "$SMOKE/a11y-tree.json"
+# ── 4. PERCEIVE: dump the a11y tree ──────────────────────────────────────────
+gjs -m "$REPO/bin/nidara-a11y" probe > "$SMOKE/a11y-tree.json"
+jq '{count, hint} + {first_nodes: [.nodes[0:10][] | {role, id, states, actions}]}'     "$SMOKE/a11y-tree.json" || head -c 2000 "$SMOKE/a11y-tree.json"
 grim ${GRIM_O:+-o "$GRIM_O"} "$SMOKE/ai-before.png"
 
-# ── 5. ACT: click a control; prove the change in tree + screenshot ───────────
+# ── 5. ACT: click the toggle; prove the change in tree + screenshot ──────────
 TARGET="$(jq -r '[.nodes[] | select((.role=="toggle button" or .role=="check box" or .role=="push button") and (.id != null) and (.id != "") and (.visible==true))][0] | if . == null then "" else "\(.role)\t\(.id)" end' "$SMOKE/a11y-tree.json")"
 ROLE="${TARGET%%$'\t'*}"; NAME="${TARGET#*$'\t'}"
 echo "click target: role='$ROLE' name='$NAME'"
 if [ -n "$NAME" ]; then
-    gjs -m "$REPO/bin/nidara-click" app gtk3-widget-factory "$NAME" "$ROLE" > "$SMOKE/click-result.json"
+    gjs -m "$REPO/bin/nidara-click" app probe "$NAME" "$ROLE" > "$SMOKE/click-result.json"
     cat "$SMOKE/click-result.json"
     sleep 1
-    gjs -m "$REPO/bin/nidara-a11y" gtk3-widget-factory > "$SMOKE/a11y-tree-after.json"
+    gjs -m "$REPO/bin/nidara-a11y" probe > "$SMOKE/a11y-tree-after.json"
+    jq '[.nodes[] | select(.id=="'"$NAME"'") | {role, id, states}]' "$SMOKE/a11y-tree-after.json" || true
 else
     echo "PROBE-GAP: no clickable node with an accessible name in the tree"
 fi

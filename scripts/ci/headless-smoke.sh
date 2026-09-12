@@ -59,7 +59,7 @@ phase_deps() {
         hyprland mesa dbus seatd systemd \
         wayland-protocols hyprland-protocols wlr-protocols \
         grim jq librsvg \
-        at-spi2-core at-spi2-atk gsettings-desktop-schemas gtk3-demos \
+        at-spi2-core gsettings-desktop-schemas \
         ttf-jetbrains-mono ttf-nerd-fonts-symbols-mono inter-font noto-fonts-emoji
 
     ldconfig
