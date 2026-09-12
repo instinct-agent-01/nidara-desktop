@@ -59,7 +59,7 @@ phase_deps() {
         hyprland mesa dbus seatd systemd \
         wayland-protocols hyprland-protocols wlr-protocols \
         grim jq librsvg \
-        at-spi2-core gsettings-desktop-schemas gtk4-demos \
+        at-spi2-core at-spi2-atk gsettings-desktop-schemas gtk3-demos \
         ttf-jetbrains-mono ttf-nerd-fonts-symbols-mono inter-font noto-fonts-emoji
 
     ldconfig
@@ -228,20 +228,29 @@ phase_run() {
     log "monitors: $(jq -r '.[].name' /tmp/smoke/monitors.json | tr '\n' ' ')"
 
     # -- FORK PATCH (instinct-agent-01): pin the output to 1920x1080@1x ------
-    # Upstream runs at the vkms default mode (1024x768), where the Control
+    # Upstream runs at the vkms default mode (1024x768@2x), where the Control
     # Center visibly clips. Fork-only change, for visual review runs.
-    local mon_name mon_w
+    # `hyprctl keyword` is REJECTED under this repo's Lua config parser (it
+    # answers "can't work with non-legacy parsers. Use eval."), so monitor
+    # rules go in as Lua expressions through `hyprctl eval`.
+    GRIM_OUTPUT=""
+    local mon_name
     mon_name="$(jq -r '.[0].name' /tmp/smoke/monitors.json)"
-    hyprctl keyword monitor "$mon_name,1920x1080@60,auto,1" >/dev/null 2>&1 || true
+    hyprctl eval "hl.monitor({ output = '$mon_name', mode = '1920x1080@60', position = '0x0', scale = 1 })" || true
     sleep 1
-    mon_w="$(hyprctl monitors -j | jq -r '.[0].width')"
-    if [ "$mon_w" != "1920" ]; then
-        log "vkms output refused 1920x1080 (got ${mon_w}); switching to a headless output"
+    if [ "$(hyprctl monitors -j | jq -r '.[0] | "\(.width)x\(.height)@\(.scale)"')" != "1920x1080@1" ]; then
+        log "vkms output refused 1920x1080@1x; adding a dedicated headless output"
         hyprctl output create headless SMOKE-1 || true
         sleep 1
-        hyprctl keyword monitor "SMOKE-1,1920x1080@60,auto,1" >/dev/null 2>&1 || true
-        hyprctl keyword monitor "$mon_name,disable" >/dev/null 2>&1 || true
+        hyprctl eval "hl.monitor({ output = 'SMOKE-1', mode = '1920x1080@60', position = '0x0', scale = 1 })" || true
+        hyprctl eval "hl.monitor({ output = '$mon_name', mode = 'disable' })" || true
+        sleep 1
+        local ws
+        ws="$(hyprctl monitors -j | jq -r '.[] | select(.name=="SMOKE-1") | .activeWorkspace.id // empty')"
+        [ -n "$ws" ] && hyprctl dispatch "hl.dsp.focus({ workspace = $ws })" || true
+        GRIM_OUTPUT="SMOKE-1"
     fi
+    echo -n "$GRIM_OUTPUT" > /tmp/smoke/grim-output
     hyprctl monitors -j > /tmp/smoke/monitors.json
     log "monitors now: $(jq -r '.[] | "\(.name) \(.width)x\(.height) scale=\(.scale)"' /tmp/smoke/monitors.json | tr '\n' ';')"
 
@@ -329,13 +338,13 @@ phase_run() {
 
     # ── 5. Screenshots for human review (NOT a gate beyond grim succeeding) ───
     sleep 4                                   # let the first frames render
-    grim /tmp/smoke/desktop.png
+    grim ${GRIM_OUTPUT:+-o "$GRIM_OUTPUT"} /tmp/smoke/desktop.png
     log "captured desktop.png"
     # Control Center open — best-effort: a CC regression shouldn't mask the
     # boot gate, but the picture is valuable to reviewers.
     if /tmp/smoke/nidara-ipc toggleControlCenter >/dev/null 2>&1; then
         sleep 2
-        grim /tmp/smoke/control-center.png || true
+        grim ${GRIM_OUTPUT:+-o "$GRIM_OUTPUT"} /tmp/smoke/control-center.png || true
         log "captured control-center.png"
     fi
 

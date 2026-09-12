@@ -35,42 +35,48 @@ gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus \
 
 # ── 2. Synthetic pointer backend (what install.sh compiles on a real install)
 VP_XML=/usr/share/wlr-protocols/unstable/wlr-virtual-pointer-unstable-v1.xml
-wayland-scanner client-header "$VP_XML" "$SMOKE/vp-client-protocol.h"
-wayland-scanner private-code  "$VP_XML" "$SMOKE/vp-protocol.c"
-cc -O2 "$REPO/bin/nidara-input.c" "$SMOKE/vp-protocol.c" -I"$SMOKE" \
+wayland-scanner client-header "$VP_XML" "$SMOKE/wlr-virtual-pointer-unstable-v1-client-protocol.h"
+wayland-scanner private-code  "$VP_XML" "$SMOKE/wlr-virtual-pointer-unstable-v1-protocol.c"
+cc -O2 "$REPO/bin/nidara-input.c" "$SMOKE/wlr-virtual-pointer-unstable-v1-protocol.c" -I"$SMOKE" \
     $(pkg-config --cflags --libs wayland-client) -o "$SMOKE/nidara-input" \
     || echo "PROBE-GAP: nidara-input build failed"
 
 # ── 3. A third-party GTK4 app to perceive and act on ─────────────────────────
-GDK_BACKEND=wayland gtk4-widget-factory >"$SMOKE/widget-factory.log" 2>&1 &
+GDK_BACKEND=wayland gtk3-widget-factory >"$SMOKE/widget-factory.log" 2>&1 &
 APP=$!
 for i in $(seq 1 20); do
-    hyprctl clients -j | jq -e '.[] | select(.class=="gtk4-widget-factory")' >/dev/null 2>&1 && break
+    hyprctl clients -j | jq -e '.[] | select(.class=="gtk3-widget-factory")' >/dev/null 2>&1 && break
     sleep 1
 done
 hyprctl clients -j > "$SMOKE/clients.json"
-hyprctl dispatch focuswindow class:gtk4-widget-factory || true
+# `hyprctl dispatch <classic string>` is a Lua syntax error under this
+# repo's config parser; the dispatch argument must be a Lua expression.
+hyprctl dispatch "hl.dsp.focus({ window = 'class:gtk3-widget-factory' })" || true
 sleep 2
 hyprctl activewindow -j > "$SMOKE/activewindow.json"
 
 # ── 4. PERCEIVE: dump the a11y tree ──────────────────────────────────────────
-gjs -m "$REPO/bin/nidara-a11y" gtk4-widget-factory > "$SMOKE/a11y-tree.json"
+GRIM_O=""
+[ -s "$SMOKE/grim-output" ] && GRIM_O="$(cat "$SMOKE/grim-output")"
+echo "grim output: ${GRIM_O:-<all>}"
+
+gjs -m "$REPO/bin/nidara-a11y" gtk3-widget-factory > "$SMOKE/a11y-tree.json"
 jq '{count, hint} + {first_nodes: [.nodes[0:8][] | {role, id, states, actions}]}' \
     "$SMOKE/a11y-tree.json" || head -c 2000 "$SMOKE/a11y-tree.json"
-grim "$SMOKE/ai-before.png"
+grim ${GRIM_O:+-o "$GRIM_O"} "$SMOKE/ai-before.png"
 
 # ── 5. ACT: click a control; prove the change in tree + screenshot ───────────
 TARGET="$(jq -r '[.nodes[] | select((.role=="toggle button" or .role=="check box" or .role=="push button") and (.id != null) and (.id != "") and (.visible==true))][0] | if . == null then "" else "\(.role)\t\(.id)" end' "$SMOKE/a11y-tree.json")"
 ROLE="${TARGET%%$'\t'*}"; NAME="${TARGET#*$'\t'}"
 echo "click target: role='$ROLE' name='$NAME'"
 if [ -n "$NAME" ]; then
-    gjs -m "$REPO/bin/nidara-click" app gtk4-widget-factory "$NAME" "$ROLE" > "$SMOKE/click-result.json"
+    gjs -m "$REPO/bin/nidara-click" app gtk3-widget-factory "$NAME" "$ROLE" > "$SMOKE/click-result.json"
     cat "$SMOKE/click-result.json"
     sleep 1
-    gjs -m "$REPO/bin/nidara-a11y" gtk4-widget-factory > "$SMOKE/a11y-tree-after.json"
+    gjs -m "$REPO/bin/nidara-a11y" gtk3-widget-factory > "$SMOKE/a11y-tree-after.json"
 else
     echo "PROBE-GAP: no clickable node with an accessible name in the tree"
 fi
-grim "$SMOKE/ai-after.png"
+grim ${GRIM_O:+-o "$GRIM_O"} "$SMOKE/ai-after.png"
 kill "$APP" 2>/dev/null
 echo "PROBE DONE"
