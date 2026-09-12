@@ -108,7 +108,7 @@ echo "toggle states after nidara-act: $(state_of "$SMOKE/a11y-after-act.json")"
 
 # (d) wev diagnostic: does the compositor deliver virtual-pointer BUTTON
 # events at all in this environment? wev logs every event it receives.
-GDK_BACKEND=wayland wev > "$SMOKE/wev.log" 2>&1 &
+GDK_BACKEND=wayland stdbuf -oL wev > "$SMOKE/wev.log" 2>&1 &
 WEV=$!
 for i in $(seq 1 15); do
     hyprctl clients -j | jq -e '.[] | select(.class=="wev" or .initialClass=="wev")' >/dev/null 2>&1 && break
