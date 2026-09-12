@@ -59,6 +59,7 @@ phase_deps() {
         hyprland mesa dbus seatd systemd \
         wayland-protocols hyprland-protocols wlr-protocols \
         grim jq librsvg \
+        at-spi2-core gsettings-desktop-schemas gtk4-demos \
         ttf-jetbrains-mono ttf-nerd-fonts-symbols-mono inter-font noto-fonts-emoji
 
     ldconfig
@@ -226,6 +227,24 @@ phase_run() {
     [ "$(jq 'length' /tmp/smoke/monitors.json)" != "0" ] || { log "FAIL: no output after 'output create headless'"; exit 1; }
     log "monitors: $(jq -r '.[].name' /tmp/smoke/monitors.json | tr '\n' ' ')"
 
+    # -- FORK PATCH (instinct-agent-01): pin the output to 1920x1080@1x ------
+    # Upstream runs at the vkms default mode (1024x768), where the Control
+    # Center visibly clips. Fork-only change, for visual review runs.
+    local mon_name mon_w
+    mon_name="$(jq -r '.[0].name' /tmp/smoke/monitors.json)"
+    hyprctl keyword monitor "$mon_name,1920x1080@60,auto,1" >/dev/null 2>&1 || true
+    sleep 1
+    mon_w="$(hyprctl monitors -j | jq -r '.[0].width')"
+    if [ "$mon_w" != "1920" ]; then
+        log "vkms output refused 1920x1080 (got ${mon_w}); switching to a headless output"
+        hyprctl output create headless SMOKE-1 || true
+        sleep 1
+        hyprctl keyword monitor "SMOKE-1,1920x1080@60,auto,1" >/dev/null 2>&1 || true
+        hyprctl keyword monitor "$mon_name,disable" >/dev/null 2>&1 || true
+    fi
+    hyprctl monitors -j > /tmp/smoke/monitors.json
+    log "monitors now: $(jq -r '.[] | "\(.name) \(.width)x\(.height) scale=\(.scale)"' /tmp/smoke/monitors.json | tr '\n' ';')"
+
     # Hyprland names its Wayland socket itself; discover it instead of guessing.
     local wl
     wl="$(basename "$(ls "$XDG_RUNTIME_DIR"/wayland-* 2>/dev/null | grep -v '\.lock$' | head -1)")"
@@ -233,6 +252,13 @@ phase_run() {
     export WAYLAND_DISPLAY="$wl"
 
     # ── 3. The shell bundle, exactly as production runs it ────────────────────
+    # -- FORK PATCH: enable the computer-use gates for the probe below -------
+    # nidara-a11y / nidara-click re-read ~/.config/nidara/ai.json per call;
+    # writing it before the boot also lights the bar's AI-control indicator.
+    mkdir -p "$HOME/.config/nidara"
+    printf '{"allowComputerUse": true, "allowComputerControl": true}\n' > "$HOME/.config/nidara/ai.json"
+    gsettings set org.gnome.desktop.interface toolkit-accessibility true 2>/dev/null || true
+
     log "booting nidara bundle…"
     export GDK_BACKEND=wayland
     export NIDARA_SHELL_ROOT="$REPO/ui/shell"
@@ -359,6 +385,12 @@ phase_run() {
         log "FAIL: JS errors during boot:"
         cat /tmp/smoke/js-errors.txt
         exit 1
+    fi
+
+    # -- FORK PATCH: computer-use probe (fork-only; never fails the smoke) ---
+    if [ -f "$REPO/scripts/ci/fork-visual-probe.sh" ]; then
+        log "running fork visual/computer-use probe…"
+        bash "$REPO/scripts/ci/fork-visual-probe.sh" || log "probe exited non-zero (best-effort)"
     fi
 
     log "SMOKE PASSED"
